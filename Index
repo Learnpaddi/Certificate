@@ -1,0 +1,410 @@
+import React, { useRef, useState } from "react";
+/*
+LearnPaddi - Internship Certificate Generator
+Single-file React component (Tailwind CSS required in host app)
+
+Features:
+- Form to enter intern details
+- Upload LearnPaddi logo (PNG/SVG)
+- Live certificate preview (A4 landscape feel)
+- Draw digital signatures for both Authorized Signatory and Intern
+- Generate QR code for verification link
+- Export certificate as PDF using html2canvas + jsPDF
+
+Notes for integrators:
+- This file is a React component. Ensure these packages are installed:
+  npm install html2canvas jspdf qrcode.react
+- Tailwind CSS should be available in the host app.
+- If you prefer other UI libs (shadcn/ui), integrate accordingly.
+*/
+
+import html2canvas from "html2canvas";
+import jsPDF from "jspdf";
+import QRCode from "qrcode.react";
+
+export default function LearnPaddiCertificateGenerator() {
+  const [form, setForm] = useState({
+    certNo: "LP-INT-" + Math.floor(100000 + Math.random() * 900000),
+    issueDate: new Date().toISOString().slice(0, 10),
+    internName: "",
+    internId: "",
+    department: "",
+    period: "",
+    authorizedName: "",
+    authorizedTitle: "",
+    internEmail: "",
+    verificationUrl: "https://verify.learnpaddi.in/",
+  });
+
+  const [logo, setLogo] = useState(null);
+  const [authSigDataUrl, setAuthSigDataUrl] = useState(null);
+  const [internSigDataUrl, setInternSigDataUrl] = useState(null);
+  const [showAuthPad, setShowAuthPad] = useState(false);
+  const [showInternPad, setShowInternPad] = useState(false);
+  const certRef = useRef(null);
+
+  function handleChange(e) {
+    const { name, value } = e.target;
+    setForm((s) => ({ ...s, [name]: value }));
+  }
+
+  function handleLogoUpload(e) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => setLogo(reader.result);
+    reader.readAsDataURL(f);
+  }
+
+  function clearLogo() {
+    setLogo(null);
+  }
+
+  // Quick signature pad implementation
+  function SignaturePad({ onSave, onClose, existing }) {
+    const canvasRef = useRef(null);
+    const painting = useRef(false);
+
+    React.useEffect(() => {
+      const c = canvasRef.current;
+      if (!c) return;
+
+      // Make the canvas crisp on high-DPI displays:
+      const rect = c.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      // Set internal pixel size to be device pixels, but keep CSS size
+      c.width = Math.max(1, Math.floor(rect.width * dpr));
+      c.height = Math.max(1, Math.floor(rect.height * dpr));
+      c.style.width = `${rect.width}px`;
+      c.style.height = `${rect.height}px`;
+
+      const ctx = c.getContext("2d");
+      // Scale so drawing operations use CSS pixels
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.lineWidth = 2.5;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+
+      if (existing) {
+        const img = new Image();
+        img.onload = () => {
+          // draw using CSS pixel dimensions so it lines up with input coords
+          ctx.clearRect(0, 0, rect.width, rect.height);
+          ctx.drawImage(img, 0, 0, rect.width, rect.height);
+        };
+        img.src = existing;
+      } else {
+        // clear on fresh pad
+        ctx.clearRect(0, 0, rect.width, rect.height);
+      }
+    }, [existing]);
+
+    function getPos(e) {
+      const rect = canvasRef.current.getBoundingClientRect();
+      if (e.touches) {
+        return {
+          x: e.touches[0].clientX - rect.left,
+          y: e.touches[0].clientY - rect.top,
+        };
+      }
+      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    }
+
+    function start(e) {
+      painting.current = true;
+      const pos = getPos(e);
+      const ctx = canvasRef.current.getContext("2d");
+      ctx.beginPath();
+      ctx.moveTo(pos.x, pos.y);
+      e.preventDefault();
+    }
+
+    function draw(e) {
+      if (!painting.current) return;
+      const pos = getPos(e);
+      const ctx = canvasRef.current.getContext("2d");
+      ctx.lineTo(pos.x, pos.y);
+      ctx.stroke();
+      e.preventDefault();
+    }
+
+    function stop() {
+      painting.current = false;
+    }
+
+    function clearPad() {
+      const c = canvasRef.current;
+      const ctx = c.getContext("2d");
+      ctx.clearRect(0, 0, c.width, c.height);
+    }
+
+    function save() {
+      const data = canvasRef.current.toDataURL("image/png");
+      onSave(data);
+      onClose();
+    }
+
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl p-4">
+          <h3 className="text-lg font-semibold mb-2">Sign here</h3>
+          <canvas
+            ref={canvasRef}
+            className="w-full h-40 border border-slate-300"
+            onMouseDown={start}
+            onMouseMove={draw}
+            onMouseUp={stop}
+            onMouseLeave={stop}
+            onTouchStart={start}
+            onTouchMove={draw}
+            onTouchEnd={stop}
+          />
+          <div className="mt-3 flex gap-2 justify-end">
+            <button
+              className="px-3 py-1 rounded bg-slate-100 border"
+              onClick={clearPad}
+              type="button"
+            >
+              Clear
+            </button>
+            <button
+              className="px-3 py-1 rounded bg-blue-600 text-white"
+              onClick={save}
+              type="button"
+            >
+              Save
+            </button>
+            <button
+              className="px-3 py-1 rounded bg-transparent border"
+              onClick={onClose}
+              type="button"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function exportToPdf() {
+    const node = certRef.current;
+    if (!node) return;
+
+    // Increase scale for better quality
+    html2canvas(node, { scale: 2, useCORS: true }).then((canvas) => {
+      const imgData = canvas.toDataURL("image/png");
+      // Use A4 landscape to better match a certificate layout
+      const pdf = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+      // The canvas is designed vertical A4-like; draw at full size
+      const w = pdf.internal.pageSize.getWidth();
+      const h = pdf.internal.pageSize.getHeight();
+      pdf.addImage(imgData, "PNG", 0, 0, w, h);
+      pdf.save(`${form.internName || "intern"}-internship-certificate.pdf`);
+    });
+  }
+
+  return (
+    <div className="p-6 min-h-screen bg-slate-50">
+      <div className="max-w-[1200px] mx-auto grid grid-cols-1 md:grid-cols-3 gap-6">
+        {/* LEFT: Form */}
+        <div className="col-span-1 bg-white p-4 rounded shadow">
+          <h2 className="text-xl font-semibold mb-3">Certificate Data</h2>
+          <div className="space-y-2">
+            <label className="block">
+              <div className="text-sm text-slate-600">Certificate No.</div>
+              <input name="certNo" value={form.certNo} onChange={handleChange} className="w-full border rounded px-2 py-1" />
+            </label>
+            <label className="block">
+              <div className="text-sm text-slate-600">Date of Issue</div>
+              <input name="issueDate" type="date" value={form.issueDate} onChange={handleChange} className="w-full border rounded px-2 py-1" />
+            </label>
+            <label className="block">
+              <div className="text-sm text-slate-600">Intern Name</div>
+              <input name="internName" value={form.internName} onChange={handleChange} className="w-full border rounded px-2 py-1" />
+            </label>
+            <label className="block">
+              <div className="text-sm text-slate-600">Intern ID</div>
+              <input name="internId" value={form.internId} onChange={handleChange} className="w-full border rounded px-2 py-1" />
+            </label>
+            <label className="block">
+              <div className="text-sm text-slate-600">Department / Domain</div>
+              <input name="department" value={form.department} onChange={handleChange} className="w-full border rounded px-2 py-1" />
+            </label>
+            <label className="block">
+              <div className="text-sm text-slate-600">Internship Period (e.g. Dec 2024 - Jan 2025)</div>
+              <input name="period" value={form.period} onChange={handleChange} className="w-full border rounded px-2 py-1" />
+            </label>
+            <label className="block">
+              <div className="text-sm text-slate-600">Authorized Person (Name)</div>
+              <input name="authorizedName" value={form.authorizedName} onChange={handleChange} className="w-full border rounded px-2 py-1" />
+            </label>
+            <label className="block">
+              <div className="text-sm text-slate-600">Authorized Person (Title)</div>
+              <input name="authorizedTitle" value={form.authorizedTitle} onChange={handleChange} className="w-full border rounded px-2 py-1" />
+            </label>
+            <label className="block">
+              <div className="text-sm text-slate-600">Intern Email</div>
+              <input name="internEmail" value={form.internEmail} onChange={handleChange} className="w-full border rounded px-2 py-1" />
+            </label>
+            <label className="block">
+              <div className="text-sm text-slate-600">Verification URL (base)</div>
+              <input name="verificationUrl" value={form.verificationUrl} onChange={handleChange} className="w-full border rounded px-2 py-1" />
+            </label>
+
+            <label className="block">
+              <div className="text-sm text-slate-600">Upload Logo (PNG / SVG)</div>
+              <input type="file" accept="image/*" onChange={handleLogoUpload} className="w-full" />
+              {logo && (
+                <div className="mt-2 flex items-center gap-2">
+                  <img src={logo} alt="logo" className="h-12 object-contain" />
+                  <button onClick={clearLogo} className="text-sm text-red-600">Remove</button>
+                </div>
+              )}
+            </label>
+
+            <div className="flex gap-2 pt-3">
+              <button onClick={() => setShowAuthPad(true)} className="px-3 py-1 bg-yellow-500 rounded text-white">Sign (Authorized)</button>
+              <button onClick={() => setShowInternPad(true)} className="px-3 py-1 bg-slate-700 rounded text-white">Sign (Intern)</button>
+              <button onClick={exportToPdf} className="ml-auto px-3 py-1 bg-blue-600 text-white rounded">Download PDF</button>
+            </div>
+          </div>
+        </div>
+
+        {/* RIGHT: Preview */}
+        <div className="col-span-2">
+          <h2 className="text-xl font-semibold mb-3">Preview</h2>
+          <div className="bg-white rounded shadow p-4">
+            <div ref={certRef} className="relative mx-auto" style={{ width: 700, minHeight: 1000, padding: 24 }}>
+              {/* outer gradient */}
+              <div className="absolute inset-0 rounded border-2" style={{ background: "linear-gradient(180deg,#0b3b64 0%, #b7832b 100%)" }}></div>
+
+              <div className="relative z-10 h-full rounded overflow-hidden" style={{ background: "linear-gradient(180deg, rgba(255,255,255,0.96), rgba(255,255,255,0.98))" }}>
+                <div className="p-8">
+                  <div className="flex items-center justify-center gap-3">
+                    {logo ? (
+                      <img src={logo} alt="logo" className="h-12 object-contain" />
+                    ) : (
+                      <div className="h-12 w-12 rounded bg-yellow-400 flex items-center justify-center text-white font-bold">LP</div>
+                    )}
+                    <div className="text-center">
+                      <div className="text-2xl font-semibold">LEARNPADDI</div>
+                      <div className="text-sm text-slate-600">Fueling Today’s Mind for Tomorrow’s Success</div>
+                    </div>
+                  </div>
+
+                  <h1 className="text-4xl text-center mt-6 font-serif" style={{ color: "#b7832b", letterSpacing: 2 }}>INTERNSHIP CERTIFICATE</h1>
+
+                  <div className="mt-4 flex justify-between text-sm text-slate-700">
+                    <div>Certificate No.: <strong>{form.certNo}</strong></div>
+                    <div>Date of Issue: <strong>{form.issueDate}</strong></div>
+                  </div>
+
+                  <div className="mt-6 bg-white rounded p-4 border">
+                    <div className="grid grid-cols-1 gap-3">
+                      <div className="flex justify-between">
+                        <div className="text-slate-700">This is to certify that</div>
+                        <div className="font-semibold uppercase">{form.internName || "[INTERN NAME]"}</div>
+                      </div>
+                      <div className="flex justify-between">
+                        <div className="text-slate-700">Intern ID:</div>
+                        <div className="font-semibold uppercase">{form.internId || "[INTERN ID]"}</div>
+                      </div>
+                      <div className="flex justify-between">
+                        <div className="text-slate-700">Department / Domain:</div>
+                        <div className="font-semibold uppercase">{form.department || "[DEPARTMENT]"}</div>
+                      </div>
+                      <div className="flex justify-between">
+                        <div className="text-slate-700">Internship Period:</div>
+                        <div className="font-semibold uppercase">{form.period || "[DURATION]"}</div>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 text-slate-700">
+                      has successfully completed the internship at <strong>LearnPaddi</strong> and fulfilled the responsibilities and deliverables assigned during the period mentioned above.
+                    </div>
+
+                    <ol className="mt-3 text-slate-700 list-decimal pl-6 space-y-2">
+                      <li>The intern demonstrated commitment and willingness to learn throughout the internship.</li>
+                      <li>The intern maintained confidentiality of LearnPaddi's data, projects, and intellectual content.</li>
+                      <li>The intern contributed positively to assigned tasks and collaborated with the team effectively.</li>
+                      <li>This certificate is issued as acknowledgement of successful completion of the internship program.</li>
+                    </ol>
+
+                  </div>
+
+                  {/* Signatures area */}
+                  <div className="mt-6 grid grid-cols-2 gap-6 items-end">
+                    <div>
+                      <div className="text-xl text-amber-700 font-semibold">Authorized Signatories</div>
+                      <div className="mt-2 bg-white p-3 rounded border">
+                        <div className="h-16">
+                          {authSigDataUrl ? (
+                            <img src={authSigDataUrl} alt="auth sig" className="h-14 object-contain" />
+                          ) : (
+                            <div className="h-14 border-dashed border rounded flex items-center justify-center text-slate-400">Digital Signature</div>
+                          )}
+                        </div>
+                        <div className="mt-2 text-slate-700">Name: <strong>{form.authorizedName || "[AUTHORIZED PERSON]"}</strong></div>
+                        <div className="text-slate-700">Designation: <strong>{form.authorizedTitle || "[TITLE]"}</strong></div>
+                        <div className="text-slate-700">Date: <strong>{form.issueDate}</strong></div>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="text-xl text-amber-700 font-semibold">Intern</div>
+                      <div className="mt-2 bg-white p-3 rounded border">
+                        <div className="h-16">
+                          {internSigDataUrl ? (
+                            <img src={internSigDataUrl} alt="intern sig" className="h-14 object-contain" />
+                          ) : (
+                            <div className="h-14 border-dashed border rounded flex items-center justify-center text-slate-400">Digital Signature</div>
+                          )}
+                        </div>
+                        <div className="mt-2 text-slate-700">Name: <strong>{form.internName || "[INTERN NAME]"}</strong></div>
+                        <div className="text-slate-700">Email: <strong>{form.internEmail || "[EMAIL]"}</strong></div>
+                        <div className="text-slate-700">Date: <strong>{form.issueDate}</strong></div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-6 flex justify-between items-center">
+                    <div className="flex items-center gap-3">
+                      <div className="w-20 h-20 rounded-full bg-yellow-500 flex items-center justify-center text-white font-bold">Seal</div>
+                      <div className="text-xs text-slate-600">Official Seal - LearnPaddi</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="inline-block bg-white p-2 rounded border">
+                        <QRCode value={(form.verificationUrl || "") + (form.certNo || "") } size={80} />
+                      </div>
+                      <div className="text-xs text-slate-600 mt-1">Scan to verify</div>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 text-xs text-slate-500 text-center">Verification URL: {(form.verificationUrl || "") + (form.certNo || "")}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Signature pads */}
+      {showAuthPad && (
+        <SignaturePad
+          existing={authSigDataUrl}
+          onSave={(d) => setAuthSigDataUrl(d)}
+          onClose={() => setShowAuthPad(false)}
+        />
+      )}
+
+      {showInternPad && (
+        <SignaturePad
+          existing={internSigDataUrl}
+          onSave={(d) => setInternSigDataUrl(d)}
+          onClose={() => setShowInternPad(false)}
+        />
+      )}
+    </div>
+  );
+}
