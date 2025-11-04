@@ -87,6 +87,8 @@ export default function LearnPaddiCertificateGenerator() {
 
       if (existing) {
         const img = new Image();
+        // required if existing is from an external origin and you want html2canvas to include it later
+        try { img.crossOrigin = "anonymous"; } catch (e) {}
         img.onload = () => {
           // draw using CSS pixel dimensions so it lines up with input coords
           ctx.clearRect(0, 0, rect.width, rect.height);
@@ -135,7 +137,9 @@ export default function LearnPaddiCertificateGenerator() {
     function clearPad() {
       const c = canvasRef.current;
       const ctx = c.getContext("2d");
-      ctx.clearRect(0, 0, c.width, c.height);
+      const rect = c.getBoundingClientRect();
+      // clear using CSS pixel dimensions (canvas has been scaled via setTransform)
+      ctx.clearRect(0, 0, rect.width, rect.height);
     }
 
     function save() {
@@ -191,17 +195,23 @@ export default function LearnPaddiCertificateGenerator() {
     const node = certRef.current;
     if (!node) return;
 
-    // Increase scale for better quality
-    html2canvas(node, { scale: 2, useCORS: true }).then((canvas) => {
-      const imgData = canvas.toDataURL("image/png");
-      // Use A4 landscape to better match a certificate layout
-      const pdf = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
-      // The canvas is designed vertical A4-like; draw at full size
-      const w = pdf.internal.pageSize.getWidth();
-      const h = pdf.internal.pageSize.getHeight();
-      pdf.addImage(imgData, "PNG", 0, 0, w, h);
-      pdf.save(`${form.internName || "intern"}-internship-certificate.pdf`);
-    });
+    // Normalize verification URL to avoid double slashes
+    setForm((s) => ({ ...s, verificationUrl: (s.verificationUrl || "").replace(/\/?$/, "/") }));
+
+    // Increase scale for better quality and handle errors
+    html2canvas(node, { scale: 2, useCORS: true })
+      .then((canvas) => {
+        const imgData = canvas.toDataURL("image/png");
+        const pdf = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+        const w = pdf.internal.pageSize.getWidth();
+        const h = pdf.internal.pageSize.getHeight();
+        pdf.addImage(imgData, "PNG", 0, 0, w, h);
+        pdf.save(`${form.internName || "intern"}-internship-certificate.pdf`);
+      })
+      .catch((err) => {
+        console.error("PDF export failed", err);
+        alert("Failed to generate PDF. See console for details.");
+      });
   }
 
   return (
@@ -283,7 +293,8 @@ export default function LearnPaddiCertificateGenerator() {
                 <div className="p-8">
                   <div className="flex items-center justify-center gap-3">
                     {logo ? (
-                      <img src={logo} alt="logo" className="h-12 object-contain" />
+                      // add crossOrigin so html2canvas can include external images when useCORS is true
+                      <img src={logo} alt="logo" crossOrigin="anonymous" className="h-12 object-contain" />
                     ) : (
                       <div className="h-12 w-12 rounded bg-yellow-400 flex items-center justify-center text-white font-bold">LP</div>
                     )}
